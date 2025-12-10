@@ -1,0 +1,4 @@
+functions-framework==3.*
+google-cloud-talent
+gspread
+oauth2client
