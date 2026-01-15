@@ -2,9 +2,14 @@ import os
 import functions_framework
 import requests
 import gspread
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
 PROJECT_ID = ""
 TENANT_ID = "projects/{}/tenants/{}".format(PROJECT_ID, "default")
+
+vertexai.init(project=PROJECT_ID, location="us-central1")
+model = GenerativeModel("gemini-2.5-flash")
 
 SERPAPI_API_KEY = ""
 SERPAPI_URL = "https://serpapi.com/search"
@@ -35,14 +40,53 @@ TARGET_LOCATIONS = {
 }
 
 SERVICE_ACCOUNT_KEY_FILE = "service_account_key.json"
-COMPETITOR_NAMES = ["ITS"]
+COMPETITOR_NAMES = ["ITS", "Google"]
+
+def categorize_job_role(title, description):
+    """Uses Gemini to categorize the job into one of the predefined GCP roles."""
+    prompt = f"""
+    Categorize the following GCP job into EXACTLY ONE of these roles based on the Title and Description.
+    
+    Roles:
+    - Cloud Architect (GCP)
+    - Cloud Engineer / DevOps Engineer
+    - Data Engineer
+    - Cloud Security Engineer
+    - Machine Learning Engineer
+    - Cloud Network Engineer
+    - Cloud Support Engineer / SRE
+    - App Modernization Engineer
+    - Migration Engineer
+    - Cloud FinOps Analyst
+    - Cloud Sales / Pre-Sales Engineer
+    - Other (If it doesn't fit the above)
+
+    Job Title: {title}
+    Job Description: {description[:2000]} # Limit description for context window
+    
+    Return ONLY the category name.
+    """
+    try:
+        response = model.generate_content(prompt)
+        category = response.text.strip()
+        # Fallback if AI hallucinates a non-listed role
+        valid_roles = [
+            "Cloud Architect (GCP)", "Cloud Engineer / DevOps Engineer", "Data Engineer",
+            "Cloud Security Engineer", "Machine Learning Engineer", "Cloud Network Engineer",
+            "Cloud Support Engineer / SRE", "App Modernization Engineer", "Migration Engineer",
+            "Cloud FinOps Analyst", "Cloud Sales / Pre-Sales Engineer"
+        ]
+        return category if any(role in category for role in valid_roles) else "Other"
+    except Exception as e:
+        print(f"AI Categorization Error: {e}")
+        return "Unknown"
 
 def filter_competitors(jobs_list: list) -> list:
     """Filters out jobs where the company name contains a competitor keyword."""
     competitor_keywords = [name.upper() for name in COMPETITOR_NAMES]
     filtered_jobs = []
     for job in jobs_list:
-        company_name = job.get("company_name", "").upper()  
+        company_name = job.get("company_name", "").upper()
         is_competitor = False
         for keyword in competitor_keywords:
             if keyword in company_name:
@@ -73,7 +117,7 @@ def write_jobs_to_sheet(gc, jobs_to_write: list, worksheet_name) -> int:
         return 0
     try:
         sheet = gc.open_by_key(SPREADSHEET_ID).worksheet(worksheet_name)
-        columns = ["job_id", "Title", "Company Name", "Source URL", "Location of Job", "Compensation", "Job Description", "Apply Link"]
+        columns = ["job_id", "Role Category", "Title", "Company Name", "Source URL", "Location of Job", "Compensation", "Job Description", "Apply Link"]
         data_to_append = [
             [job.get(col, "") for col in columns] for job in jobs_to_write
         ]
@@ -105,13 +149,12 @@ def fetch_and_process_jobs(request):
                 try:
                     params = {
                         "engine": "google_jobs",
-                        "q": '"GCP" OR "Google Cloud Platform" OR "Google Cloud"',
+                        "q": '"GCP" OR "Google Cloud Platform" OR "Google Cloud" OR "Google Cloud Engineer" OR "Google Cloud Architect" OR "Google Cloud Developer" OR "Google Cloud Specialist" OR "Google Cloud Consultant" OR "Google Cloud Professional"',
                         "api_key": SERPAPI_API_KEY,
                         "hl": "en",
                         "num": RESULTS_PER_PAGE
                     }
                     
-                    # Set the correct parameter based on the filter type
                     if filter_type == "gl":
                         params["gl"] = filter_value
                     elif filter_type == "location":
@@ -127,8 +170,10 @@ def fetch_and_process_jobs(request):
                     if 'jobs_results' in data and data['jobs_results']:
                         for job in data['jobs_results']:
                             job_description = job.get("description", "No description provided")
+                            role_category = categorize_job_role(job.get("title"), job_description)
                             aggregated_raw_job_data.append({
                                 "job_id": job.get("job_id"),
+                                "Role Category": role_category,
                                 "Title": job.get("title"),
                                 "Company Name": job.get("company_name"),
                                 "Location of Job": job.get("location", "N/A"),
