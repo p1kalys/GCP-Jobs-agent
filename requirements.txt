@@ -1,4 +1,4 @@
 functions-framework==3.*
 google-cloud-talent
 gspread
-oauth2client
+google-cloud-aiplatform>=1.30.0
